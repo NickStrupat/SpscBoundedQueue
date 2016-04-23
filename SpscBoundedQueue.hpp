@@ -1,17 +1,18 @@
-#ifndef CONCURRENT_LOCK_FREE_SPSC_BOUNDED_QUEUE_HPP_INCLUDED
-#define CONCURRENT_LOCK_FREE_SPSC_BOUNDED_QUEUE_HPP_INCLUDED
+#ifndef CONCURRENT_LOCKFREE_SPSCBOUNDEDQUEUE_HPP_INCLUDED
+#define CONCURRENT_LOCKFREE_SPSCBOUNDEDQUEUE_HPP_INCLUDED
 
 #include <atomic>
 #include <cstddef>
 #include <memory>
 
+#include "../Aligned/Aligned.hpp";
+
 namespace Concurrent {
 	namespace LockFree {
-		template<typename T>
+		template<typename T, std::size_t CacheLineSize = 64>
 		class SpscBoundedQueue {
-			std::unique_ptr<T[]> buffer;
-			std::size_t capacity;
-			std::atomic<std::size_t> size;
+			Aligned<std::atomic<T>[], CacheLineSize> buffer;
+			Aligned<std::atomic<std::size_t>, CacheLineSize> size;
 			std::size_t readIndex;
 			std::size_t writeIndex;
 		public:
@@ -19,25 +20,24 @@ namespace Concurrent {
 			SpscBoundedQueue(SpscBoundedQueue const &) = delete;
 			SpscBoundedQueue const & operator=(SpscBoundedQueue const &) = delete;
 			explicit SpscBoundedQueue(std::size_t capacity)
-				: capacity(capacity)
-				, buffer(new T[capacity])
+				: buffer(capacity)
 				, size(0)
 				, readIndex(0)
 				, writeIndex(0)
 			{}
 
 			// Capacity
-			std::size_t Capacity() const { return capacity; }
-			std::size_t Size() const { return size; }
-			bool Empty() const { return Size() == 0; }
-			bool Full() const { return Size() == Capacity(); }
+			std::size_t Capacity() const { return buffer.Size();                              }
+			std::size_t Size()     const { return size.Ref().load(std::memory_order_seq_cst); }
+			bool        Empty()    const { return Size() == 0;                                }
+			bool        Full()     const { return Size() == Capacity();                       }
 
 			// Modifiers
-			bool Push(T const & source) {
+			bool Push(T const && source) {
 				if (Full())
 					return false;
-				buffer[writeIndex] = source;
-				++size;
+				buffer[writeIndex].store(source, std::memory_order_seq_cst);
+				size.Ref().fetch_add(1, std::memory_order_seq_cst);
 				++writeIndex;
 				if (writeIndex == Capacity())
 					writeIndex = 0;
@@ -46,8 +46,8 @@ namespace Concurrent {
 			bool Pop(T & destination) {
 				if (Empty())
 					return false;
-				destination = buffer[readIndex];
-				--size;
+				destination = buffer[readIndex].load(std::memory_order_seq_cst);
+				size.Ref().fetch_sub(1, std::memory_order_seq_cst);
 				++readIndex;
 				if (readIndex == Capacity())
 					readIndex = 0;
